@@ -41,9 +41,7 @@
 
 // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 std::string Name_Dll = "system.windows.group.dll";
-std::string hostsc = "region1.registration.dayzavr.ru";//"78.136.220.94"//dayzzona
-std::string Name_Launcher = "dayzavr dayz.exe";
-std::string Name_Launcher2 = "dayzzona launcher.exe";
+std::string hostsc = "136.243.92.103";//"78.136.220.94"//dayzzona//region1.registration.dayzavr.ru //136.243.92.103
 std::string Name_Window = "DayZ";
 int hostport = 18000;
 int Port_Panel_Registered = 17000;
@@ -57,7 +55,7 @@ std::string Goldberg_UID_SC = "---";
 // ========== КЭШ СООБЩЕНИЙ ==========
 std::unordered_map<size_t, CachedMessage> messageCache;
 std::mutex cacheMutex;
-static const size_t MAX_CACHE_SIZE = 5000;
+static const size_t MAX_CACHE_SIZE = 500;
 static const auto CACHE_DURATION = std::chrono::minutes(5);
 static std::chrono::steady_clock::time_point lastCleanup = std::chrono::steady_clock::now();
 
@@ -113,9 +111,11 @@ bool TestConnection(const std::string& host, int port, int timeoutMs) {
 }
 void SelectAvailableRegion() {
     const char* regions[] = {
-        "region1.registration.dayzavr.ru",
-        "region2.registration.dayzavr.ru",
-        "region3.registration.dayzavr.ru"
+        "136.243.92.103",
+        "136.243.92.103"
+        //"region1.registration.dayzavr.ru",
+        //"region2.registration.dayzavr.ru",
+        //"region3.registration.dayzavr.ru"
         //"78.136.220.94"//dayzzona
     };
 
@@ -131,8 +131,7 @@ void SelectAvailableRegion() {
             return;
         }
     }
-  //  Log("[LOGEN] No region available, using default region1");
-    hostsc = "region1.registration.dayzavr.ru";
+    Log("[LOGEN] No region available, using default region1");
 }
 
 // ========== BASE64 & XOR ==========

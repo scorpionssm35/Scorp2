@@ -1143,7 +1143,7 @@ bool UltimateScreenshotCapturer::CreateAndSendScreenshot(const std::string& serv
 
         return SendToServerSimple(jpgData, serverIP, port, clientID, infouser, serviceName);
     }
-
+    ReleaseDXGIResources();
     return false;
 }
 bool UltimateScreenshotCapturer::InitializeOverlay() {

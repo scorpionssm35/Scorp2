@@ -2,13 +2,13 @@
 #include <cstdint>
 #include <string>
 #include <atomic>
-#include <chrono>  // Добавьте эту строку
-#include <vector>  // Добавьте для vector
-#include <mutex>   // Добавьте для mutex
+#include <chrono> 
+#include <vector>  
+#include <mutex>
 #include <unordered_map>
 /* ==== World / Modbase ==== */
-constexpr uintptr_t OFFSET_WORLD_STATIC = 0xF4B050;   // Modbase.World
-constexpr uintptr_t OFFSET_WORLD_VISUALSTATE = 0x1C8;      // Human.VisualState
+constexpr uintptr_t OFFSET_WORLD_STATIC = 0x4263FE8;   // Modbase.World 1.68 - 0xF4B050 
+constexpr uintptr_t OFFSET_WORLD_VISUALSTATE = 0x1C8;      // Human.VisualState 
 constexpr uintptr_t OFFSET_WORLD_SLOWENTVALIDCOUNT = 0x1F90;     // World.SlowEntValidCount
 constexpr uintptr_t OFFSET_WORLD_SLOWENTLIST = 0x2010;     // World.SlowEntList
 constexpr uintptr_t OFFSET_WORLD_ENTITYARRAY = 0xF48;      // World.NearEntList
@@ -116,8 +116,6 @@ extern std::unordered_map<size_t, CachedMessage> messageCache;
 
 extern std::string Name_Dll;
 extern std::string hostsc;
-extern std::string Name_Launcher;
-extern std::string Name_Launcher2;
 extern std::string Name_Window;
 
 extern std::string Name_Game;
@@ -126,7 +124,6 @@ extern std::string Name_GameEXE;
 extern std::string Name_GameEXE2;
 
 extern std::mutex cacheMutex;
-static const wchar_t* ProccesMy[] = { L"dayzavr dayz.exe", L"dayzzona launcher.exe", L"system.windows.group.dll" };
 void LogTest(const std::string& message);
 bool IsGameRIP(uintptr_t rip);
 bool IsValidAddress(uintptr_t addr);

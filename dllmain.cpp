@@ -78,7 +78,7 @@ typedef int socklen_t;
 */
 
 std::string VerSVG = "1.2.0.0(opti)";
-bool GameProjectMinimal = true;
+bool GameProjectMinimal = false;
 bool GameProjectDebag = true;
 
 HMODULE g_SelfModuleHandle = nullptr;
@@ -382,8 +382,6 @@ static const std::vector<std::string> whitelist = {
     "kernel.appcore.dll",
     "bcryptprimitives.dll",
     "psapi.dll",
-    "steam_api64.dll",
-    "dayzavr.dll",
     "uxtheme.dll",
     "windows.storage.dll",
     "wldp.dll",
@@ -1388,6 +1386,10 @@ void PeriodicServerScreenshotThread()
                 {
                     captureSuccess = true;
                     LogFormat("[LOGEN] Screenshot successfully sent on attempt %d/%d", attempt, MAX_RETRIES);
+
+                    g_periodicScreenshotCapturer.ReleaseDXGIResources();
+                    Log("[LOGEN] [MEMORY] DXGI resources released after successful screenshot");
+
                     if (g_consecutiveSkippedCaptures > 0)
                     {
                         g_consecutiveSkippedCaptures = 0;
@@ -1421,6 +1423,8 @@ void PeriodicServerScreenshotThread()
                     LogFormat("[LOGEN] Force mode still active (will auto-deactivate in %d seconds)", (300000 - (GetTickCount64() - g_forceModeStartTime.load())) / 1000);
                 }
             }
+
+            g_periodicScreenshotCapturer.ReleaseDXGIResources();
         }
         catch (const std::exception& e)
         {
@@ -3058,7 +3062,7 @@ void DetectHiddenModules() {
         // Подозрительные названия
         static const std::vector<std::string> cheatPatterns = {
             "dayzint", "cheat", "hack", "inject", "trigger", "aimbot",
-            "wallhack", "esp", "memory", "trainer", "loader", "dayzavr"
+            "wallhack", "esp", "memory", "trainer", "loader"
         };
 
         std::string fileName = lowerPath;
@@ -3077,7 +3081,7 @@ void DetectHiddenModules() {
         static const std::vector<std::string> suspiciousPaths = {
             "\\desktop\\", "\\downloads\\", "\\documents\\",
             "\\cheats\\", "\\hacks\\", "\\trainers\\",
-            "c:\\users\\", "d:\\users\\", "\\appdata\\local\\dayzavr\\"
+            "c:\\users\\", "d:\\users\\", "\\appdata\\local\\"
         };
 
         for (const auto& path : suspiciousPaths) {
@@ -3167,7 +3171,7 @@ void DetectExternalCheatProcesses() {
 
         static const std::vector<std::string> cheatPatterns = {
             "dayzint", "cheat", "hack", "inject", "trigger", "aimbot",
-            "wallhack", "esp", "memory", "trainer", "loader", "dayzavr"
+            "wallhack", "esp", "memory", "trainer", "loader"
         };
 
         for (const auto& pattern : cheatPatterns) {
@@ -3632,71 +3636,160 @@ SIZE_T GetCurrentMemoryUsageMB() {
     }
     return 0;
 }
-void ForceFullSystemReset() {
-    //LogFormat("[LOGEN] ForceFullSystemReset START - Current memory: %zu MB", GetCurrentMemoryUsageMB());
-    BD_ResetSuspicionMetrics();
-    BD_ClearLogData();
-    if (g_keyMonitor) {
-        g_keyMonitor->ClearAllData();
-        g_keyMonitor->ResetStats();
+// Уровень 1: Легкая очистка (безопасная, не влияет на детектирование)
+void LightweightCleanup() {
+    // Чистим только оперативные кэши, которые могут быть восстановлены
+    {
+        std::lock_guard<std::mutex> lock(g_logRateMutex);
+        if (g_logRateLimitMap.size() > 1000) {  // Чистим только если реально много
+            g_logRateLimitMap.clear();
+        }
     }
-    if (g_vulkanDetector) {
-        g_vulkanDetector->ClearDetectedHooks();
-        g_vulkanDetector->CleanupOldData();
-    }
-    g_logRateLimitMap.clear();
 
-    if (messageCache.size() > 0) {
+    // Очищаем кэш сообщений если он большой
+    if (messageCache.size() > 100) {
         std::lock_guard<std::mutex> lock(cacheMutex);
         messageCache.clear();
     }
-    //EPS::CleanupMemory(false);
-    BD_ApplySmartReset();
+
+    // Чистим устаревшие данные Vulkan детектора (не обнаруженные хуки!)
+    if (g_vulkanDetector) {
+        g_vulkanDetector->CleanupOldData();
+    }
+
+    // Безопасная дефрагментация кучи процесса
+    HeapCompact(GetProcessHeap(), 0);
+}
+// Уровень 2: Средняя очистка (сброс счетчиков скриншотов и логов)
+void MediumCleanup() {
+    LightweightCleanup();  // Включает легкую очистку
+
+    // Сбрасываем счетчики скриншотов (не критично для детектирования)
     SaveScreenshotToDiskCount = 0;
     SaveScreenshotToDiskCount2 = 0;
     SaveScreenshotToDiskCount3 = 0;
-    SIZE_T afterMemoryMB = GetCurrentMemoryUsageMB();
-    LogFormat("[LOGEN] ForceFullSystemReset END - Memory: %zu MB (freed %zu MB)", afterMemoryMB, (afterMemoryMB < GetCurrentMemoryUsageMB() ? GetCurrentMemoryUsageMB() - afterMemoryMB : 0));
+
+    BD_ClearLogData();  // Чистим только логи, не метрики
+
+    LogFormat("[LOGEN] MediumCleanup completed - Memory: %zu MB", GetCurrentMemoryUsageMB());
 }
+// Уровень 3: Полный сброс (только при критической утечке памяти)
+void ForceFullSystemReset() {
+    SIZE_T memoryBefore = GetCurrentMemoryUsageMB();
+    LogFormat("[LOGEN] ForceFullSystemReset START - Memory: %zu MB", memoryBefore);
+
+    // Сначала пробуем мягкие методы
+    LightweightCleanup();
+
+    // Если память всё ещё высокая - сбрасываем метрики детекторов
+    SIZE_T memoryAfterLight = GetCurrentMemoryUsageMB();
+    if (memoryAfterLight > 20000) {  // Порог для полного сброса
+        LogFormat("[LOGEN] Lightweight cleanup insufficient (%zu MB), performing full reset", memoryAfterLight);
+
+        BD_ResetSuspicionMetrics();
+        BD_ApplySmartReset();
+
+        if (g_keyMonitor) {
+            g_keyMonitor->ClearAllData();
+            g_keyMonitor->ResetStats();
+        }
+
+        if (g_vulkanDetector) {
+            g_vulkanDetector->ClearDetectedHooks();  // Только при полном сбросе!
+        }
+    }
+
+    SaveScreenshotToDiskCount = 0;
+    SaveScreenshotToDiskCount2 = 0;
+    SaveScreenshotToDiskCount3 = 0;
+
+    SIZE_T memoryAfter = GetCurrentMemoryUsageMB();
+    SIZE_T freed = (memoryBefore > memoryAfter) ? (memoryBefore - memoryAfter) : 0;
+    LogFormat("[LOGEN] ForceFullSystemReset END - Memory: %zu MB (freed %zu MB)", memoryAfter, freed);
+}
+// Умная система очистки с уровнями и защитой от частых сбросов
 void CheckMemoryAndCleanup() {
-    PROCESS_MEMORY_COUNTERS pmc;
-    pmc.cb = sizeof(PROCESS_MEMORY_COUNTERS);
+    static SIZE_T lastMemoryMB = 0;
+    static int cleanupLevel = 0;  // 0=норма, 1=легкая, 2=средняя, 3=полная
+    static uint64_t lastCleanupTime = 0;
+    static int fullResetCount = 0;
+    static uint64_t firstFullResetTime = 0;
 
-    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
-        SIZE_T memoryMB = pmc.WorkingSetSize / (1024 * 1024);
+    uint64_t now = GetTickCount64();
+    SIZE_T memoryMB = GetCurrentMemoryUsageMB();
 
-        static SIZE_T lastMemoryMB = 0;
-        static int cleanupCount = 0;
-        if (memoryMB > 22000) {
-            LogFormat("[LOGEN] CRITICAL: Memory at %zu MB - FORCING CLEANUP", memoryMB);
+    // Отслеживаем milestones для отладки
+    if (memoryMB > lastMemoryMB + 500) {
+        LogFormat("[LOGEN] Memory milestone: %zu MB (level %d)", memoryMB, cleanupLevel);
+        lastMemoryMB = memoryMB;
+    }
+
+    // ===== УРОВЕНЬ 1: Превентивная легкая очистка (>18 GB) =====
+    if (memoryMB > 18000 && cleanupLevel < 1 && (now - lastCleanupTime) > 120000) {
+        LogFormat("[LOGEN] Memory %zu MB - performing lightweight cleanup", memoryMB);
+        LightweightCleanup();
+        cleanupLevel = 1;
+        lastCleanupTime = now;
+        return;
+    }
+
+    // ===== УРОВЕНЬ 2: Средняя очистка (>20 GB) =====
+    if (memoryMB > 20000 && cleanupLevel < 2 && (now - lastCleanupTime) > 180000) {
+        LogFormat("[LOGEN] Memory %zu MB - performing medium cleanup", memoryMB);
+        MediumCleanup();
+        cleanupLevel = 2;
+        lastCleanupTime = now;
+        return;
+    }
+
+    // ===== УРОВЕНЬ 3: Критическая полная очистка (>22 GB) =====
+    if (memoryMB > 22000 && (now - lastCleanupTime) > 300000) {
+        // Проверяем частоту полных сбросов
+        if (fullResetCount == 0) {
+            firstFullResetTime = now;
+        }
+
+        if (now - firstFullResetTime > 3600000) {  // Прошёл час - сбрасываем счётчик
+            fullResetCount = 0;
+            firstFullResetTime = now;
+        }
+
+        if (fullResetCount < 3) {  // Максимум 3 полных сброса в час
+            LogFormat("[LOGEN] CRITICAL: Memory %zu MB - full reset #%d", memoryMB, fullResetCount + 1);
             ForceFullSystemReset();
-            cleanupCount++;
-            if (cleanupCount > 3 && memoryMB > 23000) {
-                LogFormat("[LOGEN] EXTREME: Memory still at %zu MB after %d cleanups", memoryMB, cleanupCount);
-
-                // Экстренные меры
-                BD_ResetSuspicionMetrics();
-                if (g_keyMonitor) {
-                    g_keyMonitor->ClearAllData();
-                }
-                messageCache.clear();
-                cleanupCount = 0;
-            }
+            fullResetCount++;
+            cleanupLevel = 3;
+            lastCleanupTime = now;
         }
         else {
-            cleanupCount = 0;
+            LogFormat("[LOGEN] WARNING: Too many full resets (%d), skipping to avoid instability", fullResetCount);
         }
-        if (memoryMB > lastMemoryMB + 1000) {
-            LogFormat("[LOGEN] Memory milestone: %zu MB", memoryMB);
-            lastMemoryMB = memoryMB;
-        }
+        return;
+    }
+
+    // ===== АВТОМАТИЧЕСКОЕ СНИЖЕНИЕ УРОВНЯ =====
+    // Если память снизилась - постепенно уменьшаем уровень агрессивности
+    if (memoryMB < 17000 && cleanupLevel > 1) {
+        LogFormat("[LOGEN] Memory normalized to %zu MB, reducing cleanup level from %d", memoryMB, cleanupLevel);
+        cleanupLevel = 1;
+    }
+    if (memoryMB < 16000 && cleanupLevel > 0) {
+        cleanupLevel = 0;
+        lastMemoryMB = memoryMB;
+    }
+
+    // Каждые 30 минут в норме делаем легкую профилактику
+    if (cleanupLevel == 0 && (now - lastCleanupTime) > 1800000) {
+        LightweightCleanup();
+        lastCleanupTime = now;
     }
 }
 void CheckMemoryAndCleanupStart() {
     __try {
         CheckMemoryAndCleanup();
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
 }
 #pragma endregion
 void InstallGlobalHooksStart() {
@@ -3747,34 +3840,10 @@ void DetectExternalCheatProcessesStart() {
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
-
-void TrimProcessWorkingSet() {
-    HANDLE hProcess = GetCurrentProcess();
-    ULONG oldPriority = 0;
-    SIZE_T oldMin = 0, oldMax = 0;
-
-    if (GetProcessWorkingSetSize(hProcess, &oldMin, &oldMax)) {
-        SetProcessWorkingSetSize(hProcess, (SIZE_T)-1, (SIZE_T)-1);
-        Sleep(50);
-        SetProcessWorkingSetSize(hProcess, oldMin, oldMax);
-    }
-    SetPriorityClass(hProcess, PROCESS_MODE_BACKGROUND_BEGIN);
-    Sleep(10);
-    SetPriorityClass(hProcess, PROCESS_MODE_BACKGROUND_END);
-
-    PROCESS_MEMORY_COUNTERS pmc;
-    pmc.cb = sizeof(pmc);
-    if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))) {
-        SIZE_T memMB = pmc.WorkingSetSize / (1024 * 1024);
-        LogFormat("[LOGEN] TrimProcessWorkingSet: Working Set reduced to %zu MB", memMB);
-    }
-}
 DWORD WINAPI InitializeSystemsCycle(LPVOID) {
     try {
         int errorCount = 0;
         static uint64_t lastResetTime = GetTickCount64();
-        static uint64_t lastForceReset = 0;      // Отдельный таймер для ForceFullSystemReset
-        static uint64_t lastWorkingSetTrim = 0;  // Отдельный таймер для TrimProcessWorkingSet
         static uint64_t lastCommitCheck = 0;
         int cycleCount = 0;
 
@@ -3821,23 +3890,6 @@ DWORD WINAPI InitializeSystemsCycle(LPVOID) {
                     LogFormat("[LOGEN] DetectExternalCheatProcessesStart... END (cycle %d)", cycleCount);
                     Sleep(5000);
                 }
-
-                // ===== ПОЛНЫЙ СБРОС СИСТЕМЫ (каждые 10 минут) =====
-                if (now - lastForceReset > 600000) {
-                    ForceFullSystemReset();
-                    lastForceReset = now;
-                    LogFormat("[LOGEN] ForceFullSystemReset... END (cycle %d)", cycleCount);
-                    Sleep(5000);
-                }
-
-                // ===== ОЧИСТКА WORKING SET (каждые 5 минут) =====
-                if (now - lastWorkingSetTrim > 300000) {
-                   // TrimProcessWorkingSet();  // РАСКОММЕНТИРОВАТЬ!
-                    lastWorkingSetTrim = now;
-                    LogFormat("[LOGEN] TrimProcessWorkingSet... END (cycle %d)", cycleCount);
-                    Sleep(5000);
-                }
-
                 if (cycleCount >= 100) {
                     cycleCount = 0;
                 }
@@ -4038,7 +4090,7 @@ void InitializeMonitoring() {
                             LogFormat("[LOGEN] Protection starts in %d:%02d", remaining / 60, remaining % 60);
                         }
                     }
-                    InitializeProtection();
+                   // InitializeProtection();
                     Sleep(1000);
                     if (g_screenshotCapturer.IsOverlayUnderAttack()) {
                         Log("[LOGEN] Overlay debug mode activated due to attack");
